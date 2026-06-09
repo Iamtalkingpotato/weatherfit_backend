@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "coupon")
@@ -68,6 +69,10 @@ public class Coupon {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    /** API 응답 전용 — DB에 저장되지 않음. campaign_action 역참조로 채워짐. */
+    @Transient
+    private List<Long> linkedCampaignIds;
 
     @PrePersist
     protected void onCreate() {

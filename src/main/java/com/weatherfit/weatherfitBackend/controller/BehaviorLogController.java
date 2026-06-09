@@ -41,8 +41,22 @@ public class BehaviorLogController {
      */
     private LocalDateTime sinceDate(int days) {
         if (days <= 0) return null;
-        if (days == 1) return LocalDate.now().atStartOfDay();          // 오늘 00:00
-        return LocalDate.now().minusDays(days).atStartOfDay();         // N일 전 00:00
+        if (days == 1) return LocalDate.now().atStartOfDay();
+        return LocalDate.now().minusDays(days).atStartOfDay();
+    }
+
+    /**
+     * startDate/endDate가 있으면 해당 날짜 범위 [start 00:00, end+1 00:00)를 반환.
+     * 없으면 days 기반 [sinceDate(days), null] 반환.
+     */
+    private LocalDateTime[] resolveWindow(int days, LocalDate startDate, LocalDate endDate) {
+        if (startDate != null && endDate != null) {
+            return new LocalDateTime[]{
+                startDate.atStartOfDay(),
+                endDate.plusDays(1).atStartOfDay()
+            };
+        }
+        return new LocalDateTime[]{ sinceDate(days), null };
     }
 
     @GetMapping
@@ -83,11 +97,13 @@ public class BehaviorLogController {
     // ── 1. 요약 지표 ──────────────────────────────────────────────────────────
     @GetMapping("/summary")
     public BehaviorSummaryDto getSummary(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        LocalDateTime since = sinceDate(days);
-        long   totalViews     = behaviorLogRepository.countViews(since);
-        Double rawDuration    = behaviorLogRepository.avgDuration(since);
-        Double rawScrollDepth = behaviorLogRepository.avgScrollDepth(since);
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        long   totalViews     = behaviorLogRepository.countViews(w[0], w[1]);
+        Double rawDuration    = behaviorLogRepository.avgDuration(w[0], w[1]);
+        Double rawScrollDepth = behaviorLogRepository.avgScrollDepth(w[0], w[1]);
 
         double avgDuration    = rawDuration    == null ? 0.0 : Math.round(rawDuration    * 10.0) / 10.0;
         double avgScrollDepth = rawScrollDepth == null ? 0.0 : Math.round(rawScrollDepth * 10.0) / 10.0;
@@ -98,8 +114,11 @@ public class BehaviorLogController {
     // ── 2. 이벤트 타입별 건수 ──────────────────────────────────────────────────
     @GetMapping("/type-counts")
     public List<BehaviorTypeCountDto> getTypeCounts(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        return behaviorLogRepository.countByEventType(sinceDate(days)).stream()
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        return behaviorLogRepository.countByEventType(w[0], w[1]).stream()
                 .map(row -> new BehaviorTypeCountDto(
                         (String) row[0],
                         ((Number) row[1]).longValue()))
@@ -109,8 +128,11 @@ public class BehaviorLogController {
     // ── 3. 시간대별 건수 ──────────────────────────────────────────────────────
     @GetMapping("/hourly")
     public List<BehaviorHourlyDto> getHourlyCounts(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        return behaviorLogRepository.countByHour(sinceDate(days)).stream()
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        return behaviorLogRepository.countByHour(w[0], w[1]).stream()
                 .map(row -> new BehaviorHourlyDto(
                         ((Number) row[0]).intValue(),
                         ((Number) row[1]).longValue()))
@@ -120,13 +142,15 @@ public class BehaviorLogController {
     // ── 5. 전환율 ─────────────────────────────────────────────────────────────
     @GetMapping("/conversion-rate")
     public BehaviorConversionDto getConversionRate(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        LocalDateTime since = sinceDate(days);
-        long   sessionCount     = behaviorLogRepository.countViews(since);
-        Double rawDuration      = behaviorLogRepository.avgDuration(since);
-        Double rawScrollDepth   = behaviorLogRepository.avgScrollDepth(since);
-        long   purchaseCount    = behaviorLogRepository.countPurchases(since);
-        long   productViewCount = behaviorLogRepository.countProductViews(since);
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        long   sessionCount     = behaviorLogRepository.countViews(w[0], w[1]);
+        Double rawDuration      = behaviorLogRepository.avgDuration(w[0], w[1]);
+        Double rawScrollDepth   = behaviorLogRepository.avgScrollDepth(w[0], w[1]);
+        long   purchaseCount    = behaviorLogRepository.countPurchases(w[0], w[1]);
+        long   productViewCount = behaviorLogRepository.countProductViews(w[0], w[1]);
 
         double avgDuration            = rawDuration    == null ? 0.0 : Math.round(rawDuration    * 10.0) / 10.0;
         double avgScrollDepth         = rawScrollDepth == null ? 0.0 : Math.round(rawScrollDepth * 10.0) / 10.0;
@@ -139,8 +163,11 @@ public class BehaviorLogController {
     // ── 6. 인기 상품 TOP 5 ────────────────────────────────────────────────────
     @GetMapping("/popular-products")
     public List<BehaviorPopularProductDto> getPopularProducts(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        return behaviorLogRepository.findTopProductsByView(sinceDate(days)).stream()
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        return behaviorLogRepository.findTopProductsByView(w[0], w[1]).stream()
                 .map(row -> new BehaviorPopularProductDto(
                         ((Number) row[0]).longValue(),
                         ((Number) row[1]).longValue()))
@@ -150,8 +177,11 @@ public class BehaviorLogController {
     // ── 7. 인기 페이지 TOP 5 ──────────────────────────────────────────────────
     @GetMapping("/popular-pages")
     public List<BehaviorPopularPageDto> getPopularPages(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        return behaviorLogRepository.findTopPagesByView(sinceDate(days)).stream()
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        return behaviorLogRepository.findTopPagesByView(w[0], w[1]).stream()
                 .map(row -> new BehaviorPopularPageDto(
                         (String) row[0],
                         ((Number) row[1]).longValue()))
@@ -161,10 +191,12 @@ public class BehaviorLogController {
     // ── 8. 위시리스트 전환율 ──────────────────────────────────────────────────
     @GetMapping("/wishlist-conversion")
     public BehaviorWishlistConversionDto getWishlistConversion(
-            @RequestParam(required = false, defaultValue = "0") int days) {
-        LocalDateTime since = sinceDate(days);
-        long wishlistCount = behaviorLogRepository.countWishlists(since);
-        long purchaseCount = behaviorLogRepository.countWishlistConversions(since);
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        long wishlistCount = behaviorLogRepository.countWishlists(w[0], w[1]);
+        long purchaseCount = behaviorLogRepository.countWishlistConversions(w[0], w[1]);
         double conversionRate = wishlistCount == 0 ? 0.0
                 : Math.round((double) purchaseCount / wishlistCount * 100 * 10.0) / 10.0;
 
@@ -176,13 +208,17 @@ public class BehaviorLogController {
     public List<BehaviorDetailDto> getDetail(
             @RequestParam(required = false) String type,
             @RequestParam(required = false) Integer hour,
-            @RequestParam(required = false, defaultValue = "0") int days) {
+            @RequestParam(required = false, defaultValue = "0") int days,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate) {
 
-        LocalDateTime since = days > 0 ? LocalDateTime.now().minusDays(days) : null;
+        LocalDateTime[] w = resolveWindow(days, startDate, endDate);
+        LocalDateTime since = w[0];
+        LocalDateTime until = w[1];
 
         List<BehaviorLog> logs = (hour != null)
-                ? behaviorLogRepository.findByEventTypeAndHourOptional(type, hour, since)
-                : behaviorLogRepository.findByEventTypeOptional(type, since);
+                ? behaviorLogRepository.findByEventTypeAndHourOptional(type, hour, since, until)
+                : behaviorLogRepository.findByEventTypeOptional(type, since, until);
 
         Set<Long> customerIds = logs.stream()
                 .map(BehaviorLog::getCustomerId)

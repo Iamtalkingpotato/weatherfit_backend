@@ -10,6 +10,9 @@ public interface CampaignActionRepository extends JpaRepository<CampaignAction, 
 
     List<CampaignAction> findByCampaignId(Long campaignId);
 
+    /** coupon_id로 역참조: 이 쿠폰을 사용하는 campaign_action 목록 */
+    List<CampaignAction> findByCouponId(Long couponId);
+
     @Transactional
     void deleteByCampaignId(Long campaignId);
 }

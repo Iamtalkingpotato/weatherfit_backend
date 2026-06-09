@@ -6,6 +6,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import org.springframework.data.domain.Sort;
+
 import java.util.List;
 
 @RestController
@@ -18,7 +20,7 @@ public class CustomerCouponController {
 
     @GetMapping
     public List<CustomerCoupon> getAll() {
-        return customerCouponRepository.findAll();
+        return customerCouponRepository.findAll(Sort.by(Sort.Direction.DESC, "issuedAt"));
     }
 
     @GetMapping("/{id}")

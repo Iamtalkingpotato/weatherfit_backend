@@ -1,12 +1,15 @@
 package com.weatherfit.weatherfitBackend.controller;
 
 import com.weatherfit.weatherfitBackend.domain.entity.Coupon;
+import com.weatherfit.weatherfitBackend.domain.repository.CampaignActionRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CouponRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/coupons")
@@ -14,11 +17,23 @@ import java.util.List;
 @CrossOrigin(origins = "*")
 public class CouponController {
 
-    private final CouponRepository couponRepository;
+    private final CouponRepository         couponRepository;
+    private final CampaignActionRepository campaignActionRepository;
 
     @GetMapping
     public List<Coupon> getAll() {
-        return couponRepository.findAll();
+        List<Coupon> coupons = couponRepository.findAll();
+
+        // 각 쿠폰에 대해 campaign_action 역참조 → 연결된 캠페인 ID 전체 수집
+        coupons.forEach(coupon -> {
+            List<Long> ids = campaignActionRepository.findByCouponId(coupon.getId()).stream()
+                    .map(action -> action.getCampaignId())
+                    .distinct()
+                    .collect(Collectors.toList());
+            coupon.setLinkedCampaignIds(ids);
+        });
+
+        return coupons;
     }
 
     @GetMapping("/{id}")
