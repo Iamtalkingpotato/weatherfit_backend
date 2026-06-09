@@ -11,7 +11,9 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Component
@@ -28,6 +30,8 @@ public class HistoryConsumer {
     private final ProductRepository productRepository;
     private final WardrobeItemRepository wardrobeItemRepository;
     private final BehaviorLogRepository behaviorLogRepository;
+    private final AnonymousPendingActionRepository anonymousPendingActionRepository;
+    private final AnonymousUserRepository anonymousUserRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "weatherfit-log-success", groupId = SUCCESS_GROUP)
@@ -51,15 +55,28 @@ public class HistoryConsumer {
                     .processedAt(LocalDateTime.now())
                     .build());
 
+            // 비로그인 사용자(uid_ 접두사)의 action은 pending 큐에 저장
+            String rawCustomerId = String.valueOf(data.getOrDefault("customer_id", ""));
+            boolean isAnonymous = rawCustomerId.startsWith("uid_") && customerId == null;
+            if (isAnonymous) {
+                saveAnonymousPending(rawCustomerId, eventType, message);
+            }
+
             switch (eventType) {
                 case "SIGNUP"                       -> saveCustomer(data);
                 case "FEEDBACK"                     -> saveFeedback(data);
                 case "PURCHASE", "WISHLIST", "CART" -> savePurchase(data);
                 case "WARDROBE"                     -> saveWardrobe(data);
-                case "VIEW", "SCROLL", "LOGIN"      -> saveBehaviorLog(data, eventType);
-                case "add_to_cart", "wishlist_add", "purchase" -> {
-                    savePurchase(data);
+                case "VIEW", "SCROLL"               -> saveBehaviorLog(data, eventType);
+                case "LOGIN" -> {
                     saveBehaviorLog(data, eventType);
+                    linkAnonymousOnLogin(data);
+                }
+                case "add_to_cart", "wishlist_add", "purchase" -> {
+                    if (!isAnonymous) {
+                        savePurchase(data);
+                        saveBehaviorLog(data, eventType);
+                    }
                 }
                 case "wishlist_remove" -> {
                     removeWishlist(data);
@@ -180,15 +197,32 @@ public void consumeFail(String message) {
             log.warn("구매 저장 실패: customer_id 없음");
             return;
         }
-        String eventType = String.valueOf(data.get("event_type"));
-        String status = switch (eventType) {
-            case "WISHLIST" -> "WISHLIST";
-            case "CART"     -> "CART";
-            default         -> "PURCHASED";
-        };
+        // 정규화된 타입 기준으로 status 결정 (raw WISHLIST_ADD도 WISHLIST로 처리)
+        String normalized = normalizeEventType(data);
+        String rawType    = String.valueOf(data.getOrDefault("event_type", ""));
+        String status;
+        if ("wishlist_add".equals(normalized) || "WISHLIST".equals(rawType) || "WISHLIST_ADD".equals(rawType)) {
+            status = "WISHLIST";
+        } else if ("add_to_cart".equals(normalized) || "CART".equals(rawType) || "ADD_TO_CART".equals(rawType)) {
+            status = "CART";
+        } else {
+            status = "PURCHASED";
+        }
 
-        Long cid = Long.parseLong(String.valueOf(customerId));
-        Long pid = Long.parseLong(String.valueOf(data.get("product_id")));
+        Long cid;
+        try {
+            cid = Long.parseLong(String.valueOf(customerId));
+        } catch (NumberFormatException e) {
+            log.warn("구매 저장 실패: customer_id 파싱 불가 ({})", customerId);
+            return;
+        }
+        Long pid;
+        try {
+            pid = Long.parseLong(String.valueOf(data.get("product_id")));
+        } catch (NumberFormatException e) {
+            log.warn("구매 저장 실패: product_id 파싱 불가");
+            return;
+        }
 
         // 중복 체크
         if (purchaseRepository.existsByCustomerIdAndProductIdAndStatus(cid, pid, status)) {
@@ -314,6 +348,89 @@ public void consumeFail(String message) {
             });
         } catch (Exception e) {
             log.error("최근 로그인 날짜 업데이트 실패: {}", e.getMessage());
+        }
+    }
+
+    /** 비로그인 액션을 pending 테이블에 임시 저장 */
+    private void saveAnonymousPending(String anonymousId, String eventType, String rawMessage) {
+        try {
+            anonymousPendingActionRepository.save(AnonymousPendingAction.builder()
+                    .anonymousId(anonymousId)
+                    .eventType(eventType)
+                    .dataJson(rawMessage)
+                    .build());
+            log.info("비로그인 액션 임시 저장: anonymousId={}, eventType={}", anonymousId, eventType);
+        } catch (Exception e) {
+            log.warn("비로그인 액션 저장 실패: {}", e.getMessage());
+        }
+    }
+
+    /** 로그인 이벤트에 anonymous_id가 있으면 pending 액션을 실제 고객 데이터로 이관 */
+    private void linkAnonymousOnLogin(Map<String, Object> data) {
+        try {
+            Object rawAnonymousId = data.get("anonymous_id");
+            if (rawAnonymousId == null || String.valueOf(rawAnonymousId).isBlank()) return;
+            String anonymousId = String.valueOf(rawAnonymousId);
+
+            Long customerId = parseCustomerId(data);
+            if (customerId == null) return;
+
+            // 1. 기존 테이블에 anonymous_id 컬럼이 있는 경우 직접 연동 (이미 저장된 데이터)
+            try { anonymousUserRepository.linkPurchases(customerId, anonymousId); } catch (Exception ignored) {}
+            try { anonymousUserRepository.linkWardrobeItems(customerId, anonymousId); } catch (Exception ignored) {}
+            try { anonymousUserRepository.linkFeedbacks(customerId, anonymousId); } catch (Exception ignored) {}
+
+            // 2. pending 큐에 저장된 임시 액션 이관
+            List<AnonymousPendingAction> pending =
+                    anonymousPendingActionRepository.findByAnonymousId(anonymousId);
+
+            for (AnonymousPendingAction action : pending) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> actionData = objectMapper.readValue(action.getDataJson(), Map.class);
+                    actionData.put("customer_id", customerId.toString());
+
+                    String et = action.getEventType();
+
+                    // 행동 로그 복원
+                    Long itemId = parseProductId(actionData);
+                    behaviorLogRepository.save(BehaviorLog.builder()
+                            .customerId(customerId)
+                            .eventType(et)
+                            .pageUrl(String.valueOf(actionData.getOrDefault("page_url",
+                                    actionData.getOrDefault("pageUrl", ""))))
+                            .itemId(itemId)
+                            .duration(actionData.get("duration") != null
+                                    ? Integer.parseInt(String.valueOf(actionData.get("duration"))) : null)
+                            .scrollDepth(actionData.get("scroll_depth") != null
+                                    ? Integer.parseInt(String.valueOf(actionData.get("scroll_depth"))) : null)
+                            .createdAt(action.getCreatedAt())
+                            .build());
+
+                    // 구매/찜/장바구니 복원
+                    if (Set.of("wishlist_add", "add_to_cart", "purchase",
+                            "WISHLIST", "CART", "PURCHASE").contains(et)) {
+                        savePurchase(actionData);
+                    }
+                } catch (Exception e) {
+                    log.warn("비로그인 액션 이관 실패 (id={}): {}", action.getId(), e.getMessage());
+                }
+            }
+
+            if (!pending.isEmpty()) {
+                anonymousPendingActionRepository.deleteByAnonymousId(anonymousId);
+            }
+
+            // AnonymousUser converted 플래그 업데이트
+            anonymousUserRepository.findByAnonymousId(anonymousId).ifPresent(user -> {
+                user.setConverted(true);
+                anonymousUserRepository.save(user);
+            });
+
+            log.info("비로그인 → 로그인 연동 완료: anonymousId={}, customerId={}, pending={}건",
+                    anonymousId, customerId, pending.size());
+        } catch (Exception e) {
+            log.error("비로그인 연동 실패: {}", e.getMessage());
         }
     }
 

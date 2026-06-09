@@ -5,6 +5,8 @@ import com.weatherfit.weatherfitBackend.domain.entity.Product;
 import com.weatherfit.weatherfitBackend.dto.CustomerDto;
 import com.weatherfit.weatherfitBackend.domain.entity.Purchase;
 import com.weatherfit.weatherfitBackend.domain.entity.WardrobeItem;
+import com.weatherfit.weatherfitBackend.domain.repository.BehaviorLogRepository;
+import com.weatherfit.weatherfitBackend.domain.repository.CustomerCouponRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CustomerRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.ProductRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.PurchaseRepository;
@@ -32,6 +34,8 @@ public class CustomerController {
     private final PurchaseRepository            purchaseRepository;
     private final TemperatureFeedbackRepository feedbackRepository;
     private final WardrobeItemRepository        wardrobeItemRepository;
+    private final CustomerCouponRepository      customerCouponRepository;
+    private final BehaviorLogRepository         behaviorLogRepository;
 
     @GetMapping
     public List<CustomerDto> getAll() {
@@ -105,10 +109,10 @@ public class CustomerController {
             customer.setColdSensitivity(Integer.parseInt(String.valueOf(data.get("cold_sensitivity"))));
         }
         if (data.containsKey("preferred_style")) {
-            customer.setPreferredStyle(String.valueOf(data.get("preferred_style")));
+            customer.setPreferredStyle(String.valueOf(data.get("preferred_style")).toUpperCase());
         }
         if (data.containsKey("activity_level")) {
-            customer.setActivityLevel(String.valueOf(data.get("activity_level")));
+            customer.setActivityLevel(String.valueOf(data.get("activity_level")).toUpperCase());
         }
         if (data.containsKey("marketing_consent")) {
             customer.setMarketingConsent(Boolean.parseBoolean(String.valueOf(data.get("marketing_consent"))));
@@ -134,6 +138,11 @@ public class CustomerController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         if (!customerRepository.existsById(id)) return ResponseEntity.notFound().build();
+        behaviorLogRepository.deleteAll(behaviorLogRepository.findByCustomerId(id));
+        feedbackRepository.deleteAll(feedbackRepository.findByCustomerId(id));
+        wardrobeItemRepository.deleteAll(wardrobeItemRepository.findByCustomerId(id));
+        purchaseRepository.deleteAll(purchaseRepository.findByCustomerId(id));
+        customerCouponRepository.deleteAll(customerCouponRepository.findByCustomerId(id));
         customerRepository.deleteById(id);
         return ResponseEntity.noContent().build();
     }
@@ -215,8 +224,8 @@ public class CustomerController {
                     .gender(String.valueOf(data.get("gender")))
                     .birthDate(LocalDate.parse(String.valueOf(data.get("birth_date"))))
                     .joinDate(LocalDate.now())
-                    .preferredStyle(String.valueOf(data.getOrDefault("preferred_style", "")))
-                    .activityLevel(String.valueOf(data.getOrDefault("activity_level", "MEDIUM")))
+                    .preferredStyle(String.valueOf(data.getOrDefault("preferred_style", "CASUAL")).toUpperCase())
+                    .activityLevel(String.valueOf(data.getOrDefault("activity_level", "MEDIUM")).toUpperCase())
                     .coldSensitivity(data.get("cold_sensitivity") != null ? Integer.parseInt(String.valueOf(data.get("cold_sensitivity"))) : 3)
                     .marketingConsent(Boolean.parseBoolean(String.valueOf(data.getOrDefault("marketing_consent", false))))
                     .pushConsent(Boolean.parseBoolean(String.valueOf(data.getOrDefault("push_consent", false))))

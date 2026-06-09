@@ -77,6 +77,11 @@ public class FilteringConsumer {
         }
 
         return switch (eventType) {
+    case "SCROLL", "scroll"                   -> "알 수 없는 오류";
+    case "search", "SEARCH"                   -> "알 수 없는 오류";
+    case "login", "LOGIN"                     -> "알 수 없는 오류";
+    case "SIGNUP", "signup"                   -> "email 필드 없음";
+    case "CUSTOMER_UPDATE", "customer_update" -> "알 수 없는 오류";
     case "WISHLIST"                                  -> "product_id 필드 없음";
     case "add_to_cart"                               -> "product_id, price, size 중 필드 없음";
     case "purchase"                                  -> "product_id, price, size 중 필드 없음";
@@ -101,9 +106,12 @@ public class FilteringConsumer {
     if (String.valueOf(data.get("customer_id")).startsWith("anon_")) return false;  
 
     return switch (eventType) {
-        case "page_view", "product_view", "outfit_view",
-             "scroll", "login"    -> true;
-        case "signup"             -> data.containsKey("email");
+        case "page_view", "product_view", "outfit_view" -> true;
+        case "SCROLL", "scroll"                          -> true;
+        case "search", "SEARCH"                          -> true;
+        case "login", "LOGIN"                            -> true;
+        case "SIGNUP", "signup"                          -> data.containsKey("email");
+        case "CUSTOMER_UPDATE", "customer_update"        -> true;
         case "WISHLIST"           -> data.containsKey("product_id");
         case "add_to_cart"        -> data.containsKey("product_id") && data.containsKey("price");
         case "purchase"           -> data.containsKey("product_id") && data.containsKey("price");
@@ -132,7 +140,11 @@ public class FilteringConsumer {
             case "PAGE_VIEW"       -> "page_view";
             case "PRODUCT_VIEW"    -> "product_view";
             case "OUTFIT_VIEW"     -> "outfit_view";
+            case "SCROLL"          -> "scroll";
             case "SEARCH"          -> "search";
+            case "LOGIN"           -> "login";
+            case "SIGNUP"          -> "signup";
+            case "CUSTOMER_UPDATE" -> "customer_update";
             case "ADD_TO_CART"     -> "add_to_cart";
             case "WISHLIST_ADD"    -> "wishlist_add";
             case "WISHLIST_REMOVE" -> "wishlist_remove";

@@ -170,7 +170,8 @@ public class CampaignPopupController {
             }
             return true;
         } catch (Exception e) {
-            return true;
+            // 필터 평가 실패 시 안전하게 미표시 처리
+            return false;
         }
     }
 
@@ -236,10 +237,12 @@ public class CampaignPopupController {
                     return matchNum(count, operator, Double.parseDouble(value));
                 }
                 default:
-                    return true;
+                    // 알 수 없는 필드 → 조건 불일치로 처리
+                    return false;
             }
         } catch (Exception e) {
-            return true;
+            // 개별 필드 평가 실패 시 안전하게 미표시 처리
+            return false;
         }
     }
 
