@@ -36,10 +36,6 @@ public class Customer {
     @Column(name = "phone", length = 20)
     private String phone;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "region_id")
-    private Region region;
-
     @Column(name = "join_date")
     private LocalDate joinDate;
 

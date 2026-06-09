@@ -79,6 +79,9 @@ public class Campaign {
     @Column(name = "email_body", columnDefinition = "TEXT")
     private String emailBody;
 
+    @Column(name = "popup_message", columnDefinition = "TEXT")
+    private String popupMessage;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

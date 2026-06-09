@@ -100,6 +100,22 @@ public class CampaignController {
         return ResponseEntity.noContent().build();
     }
 
+    // ── 팝업 조회 ───────────────────────────────────────────────────────────────
+
+    @GetMapping("/popup")
+    public ResponseEntity<?> getPopup(@RequestParam Long customerId) {
+        LocalDate today = LocalDate.now();
+
+        return campaignRepository.findAll().stream()
+                .filter(c -> c.getPopupMessage() != null && !c.getPopupMessage().isBlank())
+                .filter(c -> "실행중".equals(c.getStatus()) || "진행중".equals(c.getStatus()))
+                .filter(c -> c.getStartDate() != null && !today.isBefore(c.getStartDate()))
+                .filter(c -> c.getEndDate()   != null && !today.isAfter(c.getEndDate()))
+                .findFirst()
+                .map(c -> ResponseEntity.ok((Object) Map.of("id", c.getId(), "popupMessage", c.getPopupMessage())))
+                .orElse(ResponseEntity.ok(null));
+    }
+
     // ── 쿠폰 수동 발급 ─────────────────────────────────────────────────────────
 
     @PostMapping("/{id}/issue-coupons")
@@ -240,6 +256,7 @@ public class CampaignController {
         }
         if (body.containsKey("emailSubject"))    target.setEmailSubject(asString(body.get("emailSubject")));
         if (body.containsKey("emailBody"))       target.setEmailBody(asString(body.get("emailBody")));
+        if (body.containsKey("popupMessage"))    target.setPopupMessage(asString(body.get("popupMessage")));
     }
 
     private String toJsonText(Object raw) {

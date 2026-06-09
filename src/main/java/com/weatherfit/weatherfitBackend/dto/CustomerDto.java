@@ -37,7 +37,6 @@ public class CustomerDto {
     private String        joinType;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
-    private Long          regionId;
     private String        nextMembershipLevel;
     private int           totalPurchaseAmount;
     private int           totalFeedbackCount;
@@ -47,7 +46,6 @@ public class CustomerDto {
         CustomerDto dto = new CustomerDto();
         dto.setId(c.getId());
         dto.setUid(c.getUid());
-        dto.setRegionId(c.getRegion() != null ? c.getRegion().getId() : null);
         dto.setName(c.getName());
         dto.setEmail(c.getEmail());
         dto.setGender(c.getGender());

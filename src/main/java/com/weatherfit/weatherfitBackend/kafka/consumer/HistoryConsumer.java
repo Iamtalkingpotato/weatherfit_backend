@@ -316,4 +316,42 @@ public void consumeFail(String message) {
             log.error("최근 로그인 날짜 업데이트 실패: {}", e.getMessage());
         }
     }
+
+    /** weatherfit.customer 토픽 소비 — changed_fields에 있는 필드만 선택적 업데이트 */
+    @KafkaListener(topics = "weatherfit.customer", groupId = SUCCESS_GROUP)
+    public void consumeCustomerUpdate(ConsumerRecord<String, String> record) {
+        String message = record.value();
+        try {
+            Map<String, Object> data = objectMapper.readValue(message, Map.class);
+            String eventType = String.valueOf(data.getOrDefault("event_type", ""));
+            if (!"customer_update".equals(eventType)) return;
+
+            Long customerId = parseCustomerId(data);
+            if (customerId == null) { log.warn("customer_update 무시: customer_id 없음"); return; }
+
+            Object changedFieldsRaw = data.get("changed_fields");
+            if (!(changedFieldsRaw instanceof Map)) { log.warn("customer_update 무시: changed_fields 없음"); return; }
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> changedFields = (Map<String, Object>) changedFieldsRaw;
+
+            customerRepository.findById(customerId).ifPresentOrElse(customer -> {
+                if (changedFields.containsKey("marketingConsent") && changedFields.get("marketingConsent") != null)
+                    customer.setMarketingConsent(Boolean.parseBoolean(String.valueOf(changedFields.get("marketingConsent"))));
+                if (changedFields.containsKey("emailConsent") && changedFields.get("emailConsent") != null)
+                    customer.setEmailConsent(Boolean.parseBoolean(String.valueOf(changedFields.get("emailConsent"))));
+                if (changedFields.containsKey("coldSensitivity") && changedFields.get("coldSensitivity") != null)
+                    customer.setColdSensitivity(Integer.parseInt(String.valueOf(changedFields.get("coldSensitivity"))));
+                if (changedFields.containsKey("activityLevel") && changedFields.get("activityLevel") != null)
+                    customer.setActivityLevel(String.valueOf(changedFields.get("activityLevel")));
+                if (changedFields.containsKey("preferredStyle") && changedFields.get("preferredStyle") != null)
+                    customer.setPreferredStyle(String.valueOf(changedFields.get("preferredStyle")));
+                customerRepository.save(customer);
+                log.info("고객 정보 업데이트 완료: customerId={}, 변경필드={}", customerId, changedFields.keySet());
+            }, () -> log.warn("customer_update 무시: 고객 없음 customerId={}", customerId));
+
+        } catch (Exception e) {
+            log.error("고객 정보 업데이트 실패: {}", e.getMessage());
+        }
+    }
 }

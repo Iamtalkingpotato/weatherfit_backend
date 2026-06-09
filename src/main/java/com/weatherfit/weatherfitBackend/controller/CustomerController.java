@@ -110,6 +110,18 @@ public class CustomerController {
         if (data.containsKey("activity_level")) {
             customer.setActivityLevel(String.valueOf(data.get("activity_level")));
         }
+        if (data.containsKey("marketing_consent")) {
+            customer.setMarketingConsent(Boolean.parseBoolean(String.valueOf(data.get("marketing_consent"))));
+        }
+        if (data.containsKey("push_consent")) {
+            customer.setPushConsent(Boolean.parseBoolean(String.valueOf(data.get("push_consent"))));
+        }
+        if (data.containsKey("email_consent")) {
+            customer.setEmailConsent(Boolean.parseBoolean(String.valueOf(data.get("email_consent"))));
+        }
+        if (data.containsKey("sms_consent")) {
+            customer.setSmsConsent(Boolean.parseBoolean(String.valueOf(data.get("sms_consent"))));
+        }
 
         customerRepository.save(customer);
 

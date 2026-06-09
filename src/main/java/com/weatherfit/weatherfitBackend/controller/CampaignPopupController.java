@@ -1,19 +1,23 @@
 package com.weatherfit.weatherfitBackend.controller;
 
+import com.weatherfit.weatherfitBackend.domain.entity.AnonymousPopupRule;
 import com.weatherfit.weatherfitBackend.domain.entity.AnonymousUser;
 import com.weatherfit.weatherfitBackend.domain.entity.Campaign;
 import com.weatherfit.weatherfitBackend.domain.entity.CampaignAction;
 import com.weatherfit.weatherfitBackend.domain.entity.Customer;
+import com.weatherfit.weatherfitBackend.domain.repository.AnonymousPopupRuleRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.AnonymousUserRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CampaignActionRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CampaignRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CustomerRepository;
+import com.weatherfit.weatherfitBackend.domain.repository.PurchaseRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,12 +26,15 @@ import java.util.Optional;
 @RestController
 @RequestMapping("/api/campaigns")
 @RequiredArgsConstructor
+@CrossOrigin(origins = "*")
 public class CampaignPopupController {
 
-    private final AnonymousUserRepository  anonymousUserRepository;
-    private final CampaignRepository       campaignRepository;
-    private final CampaignActionRepository campaignActionRepository;
-    private final CustomerRepository       customerRepository;
+    private final AnonymousUserRepository      anonymousUserRepository;
+    private final AnonymousPopupRuleRepository anonymousPopupRuleRepository;
+    private final CampaignRepository           campaignRepository;
+    private final CampaignActionRepository     campaignActionRepository;
+    private final CustomerRepository           customerRepository;
+    private final PurchaseRepository           purchaseRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ── 비로그인 팝업 체크 ─────────────────────────────────────
@@ -38,47 +45,55 @@ public class CampaignPopupController {
 
         Map<String, Object> response = new HashMap<>();
 
-        // 1. 해당 UUID 사용자 조회
+        // 1. 해당 UUID 사용자 조회 — 없으면 신규 사용자로 insert 후 계속 진행
         Optional<AnonymousUser> userOpt = anonymousUserRepository.findByAnonymousId(anonymousId);
+        AnonymousUser user;
         if (userOpt.isEmpty()) {
+            LocalDateTime now = LocalDateTime.now();
+            user = AnonymousUser.builder()
+                    .anonymousId(anonymousId)
+                    .visitCount(1)
+                    .firstVisit(now)
+                    .lastVisit(now)
+                    .popupShown(0)
+                    .popupClicked(false)
+                    .converted(false)
+                    .build();
+            anonymousUserRepository.save(user);
+        } else {
+            user = userOpt.get();
+            user.setVisitCount(user.getVisitCount() + 1);
+            user.setLastVisit(LocalDateTime.now());
+            anonymousUserRepository.save(user);
+        }
+
+        // 2. visit_count 규칙으로 이미 팝업 노출됐거나 전환된 경우 스킵
+        if ((user.getPopupShown() != null && user.getPopupShown() > 0) || Boolean.TRUE.equals(user.getConverted())) {
             response.put("showPopup", false);
             return ResponseEntity.ok(response);
         }
 
-        AnonymousUser user = userOpt.get();
+        // 3. 활성 팝업 규칙 중 조건에 맞는 첫 번째 규칙 탐색
+        List<AnonymousPopupRule> rules = anonymousPopupRuleRepository.findByIsActiveTrue();
+        AnonymousPopupRule matched = rules.stream()
+                .filter(r -> {
+                    if ("visit_count".equals(r.getRuleType())) {
+                        return user.getVisitCount() >= r.getThreshold();
+                    } else if ("repeat_interval".equals(r.getRuleType())) {
+                        return user.getVisitCount() % r.getThreshold() == 0;
+                    }
+                    return false;
+                })
+                .findFirst().orElse(null);
 
-        // 2. 이미 팝업 노출됐거나 전환된 경우 스킵
-        if (Boolean.TRUE.equals(user.getPopupShown()) || Boolean.TRUE.equals(user.getConverted())) {
-            response.put("showPopup", false);
-            return ResponseEntity.ok(response);
-        }
-
-        // 3. 활성 캠페인 중 anonymousMinVisits 조건 + POPUP 액션 있는 것 탐색
-        LocalDate today = LocalDate.now();
-        Optional<Campaign> campaignOpt = campaignRepository.findAll().stream()
-                .filter(c -> "실행중".equals(c.getStatus()))
-                .filter(c -> c.getAnonymousMinVisits() != null)
-                .filter(c -> c.getStartDate() != null && !today.isBefore(c.getStartDate()))
-                .filter(c -> c.getEndDate() != null && !today.isAfter(c.getEndDate()))
-                .filter(c -> user.getVisitCount() >= c.getAnonymousMinVisits())
-                .findFirst();
-
-        if (campaignOpt.isPresent()) {
-            Campaign campaign = campaignOpt.get();
-            Optional<CampaignAction> popupAction = campaignActionRepository
-                    .findByCampaignId(campaign.getId()).stream()
-                    .filter(a -> "POPUP".equals(a.getActionType()))
-                    .findFirst();
-
-            if (popupAction.isPresent()) {
-                response.put("showPopup", true);
-                response.put("campaignId", campaign.getId());
-                response.put("message", popupAction.get().getPopupMessage() != null
-                        ? popupAction.get().getPopupMessage()
-                        : "자주 방문하시네요! 회원가입하고 더 많은 혜택을 받아보세요.");
-            } else {
-                response.put("showPopup", false);
+        if (matched != null) {
+            if ("visit_count".equals(matched.getRuleType())) {
+                user.setPopupShown(user.getPopupShown() + 1);
+                anonymousUserRepository.save(user);
             }
+            response.put("showPopup", true);
+            response.put("message", matched.getMessage());
+            response.put("couponId", matched.getCouponId());
         } else {
             response.put("showPopup", false);
         }
@@ -102,31 +117,34 @@ public class CampaignPopupController {
         }
         Customer customer = customerOpt.get();
 
-        // 2. 진행중인 캠페인 중 POPUP 액션 있는 것 탐색
+        // 2. 진행중인 캠페인 중 POPUP 액션이 있는 것 탐색 (POPUP 액션 보유 여부까지 함께 확인)
         LocalDate today = LocalDate.now();
-        Optional<Campaign> campaignOpt = campaignRepository.findAll().stream()
-                .filter(c -> "실행중".equals(c.getStatus()))
-                .filter(c -> c.getStartDate() != null && !today.isBefore(c.getStartDate()))
-                .filter(c -> c.getEndDate() != null && !today.isAfter(c.getEndDate()))
-                .filter(c -> matchesFilter(c, customer))
-                .findFirst();
+        CampaignAction foundPopupAction = null;
+        Campaign foundCampaign = null;
 
-        if (campaignOpt.isPresent()) {
-            Campaign campaign = campaignOpt.get();
+        for (Campaign c : campaignRepository.findAll()) {
+            if (!"실행중".equals(c.getStatus())) continue;
+            if (c.getStartDate() == null || today.isBefore(c.getStartDate())) continue;
+            if (c.getEndDate() == null || today.isAfter(c.getEndDate())) continue;
+            if (!matchesFilter(c, customer)) continue;
+
             Optional<CampaignAction> popupAction = campaignActionRepository
-                    .findByCampaignId(campaign.getId()).stream()
+                    .findByCampaignId(c.getId()).stream()
                     .filter(a -> "POPUP".equals(a.getActionType()))
                     .findFirst();
-
             if (popupAction.isPresent()) {
-                response.put("showPopup", true);
-                response.put("campaignId", campaign.getId());
-                response.put("message", popupAction.get().getPopupMessage() != null
-                        ? popupAction.get().getPopupMessage()
-                        : "특별 혜택을 확인하세요!");
-            } else {
-                response.put("showPopup", false);
+                foundCampaign = c;
+                foundPopupAction = popupAction.get();
+                break;
             }
+        }
+
+        if (foundPopupAction != null) {
+            response.put("showPopup", true);
+            response.put("campaignId", foundCampaign.getId());
+            response.put("message", foundPopupAction.getPopupMessage() != null
+                    ? foundPopupAction.getPopupMessage()
+                    : "특별 혜택을 확인하세요!");
         } else {
             response.put("showPopup", false);
         }
@@ -144,10 +162,11 @@ public class CampaignPopupController {
             if (conditions.isEmpty()) return true;
 
             for (Map<String, Object> cond : conditions) {
-                String fieldId  = String.valueOf(cond.get("fieldId"));
-                String operator = String.valueOf(cond.get("operator"));
-                String value    = String.valueOf(cond.get("value"));
-                if (!matchField(customer, fieldId, operator, value)) return false;
+                String fieldId   = String.valueOf(cond.get("fieldId"));
+                String operator  = String.valueOf(cond.get("operator"));
+                String value     = String.valueOf(cond.get("value"));
+                String dateRange = cond.get("dateRange") != null ? String.valueOf(cond.get("dateRange")) : "all";
+                if (!matchField(customer, campaign, fieldId, operator, value, dateRange)) return false;
             }
             return true;
         } catch (Exception e) {
@@ -155,7 +174,8 @@ public class CampaignPopupController {
         }
     }
 
-    private boolean matchField(Customer customer, String fieldId, String operator, String value) {
+    private boolean matchField(Customer customer, Campaign campaign,
+                               String fieldId, String operator, String value, String dateRange) {
         try {
             switch (fieldId) {
                 case "gender":
@@ -164,6 +184,8 @@ public class CampaignPopupController {
                     return matchStr(customer.getMembershipLevel(), operator, value);
                 case "preferredStyle":
                     return matchStr(customer.getPreferredStyle(), operator, value);
+                case "activityLevel":
+                    return matchStr(customer.getActivityLevel(), operator, value);
                 case "coldSensitivity":
                     return matchNum(customer.getColdSensitivity() != null
                             ? customer.getColdSensitivity().doubleValue() : 0, operator, Double.parseDouble(value));
@@ -171,6 +193,48 @@ public class CampaignPopupController {
                     if (customer.getBirthDate() == null) return false;
                     int age = java.time.Period.between(customer.getBirthDate(), LocalDate.now()).getYears();
                     return matchNum(age, operator, Double.parseDouble(value));
+                case "purchaseCount": {
+                    double count;
+                    if ("campaign".equals(dateRange) && campaign.getStartDate() != null) {
+                        count = purchaseRepository.findByCustomerIdAndStatusAndPurchasedAtAfter(
+                                customer.getId(), "PURCHASED", campaign.getStartDate().atStartOfDay()).size();
+                    } else {
+                        count = purchaseRepository.findByCustomerIdAndStatus(customer.getId(), "PURCHASED").size();
+                    }
+                    return matchNum(count, operator, Double.parseDouble(value));
+                }
+                case "totalPurchaseAmount": {
+                    double total;
+                    if ("campaign".equals(dateRange) && campaign.getStartDate() != null) {
+                        total = purchaseRepository.findByCustomerIdAndStatusAndPurchasedAtAfter(
+                                customer.getId(), "PURCHASED", campaign.getStartDate().atStartOfDay())
+                                .stream().mapToDouble(p -> p.getPrice() != null ? p.getPrice() : 0).sum();
+                    } else {
+                        Integer sum = purchaseRepository.sumPurchasedAmountByCustomerId(customer.getId());
+                        total = sum != null ? sum.doubleValue() : 0.0;
+                    }
+                    return matchNum(total, operator, Double.parseDouble(value));
+                }
+                case "cartCount": {
+                    double count;
+                    if ("campaign".equals(dateRange) && campaign.getStartDate() != null) {
+                        count = purchaseRepository.findByCustomerIdAndStatusAndPurchasedAtAfter(
+                                customer.getId(), "CART", campaign.getStartDate().atStartOfDay()).size();
+                    } else {
+                        count = purchaseRepository.findByCustomerIdAndStatus(customer.getId(), "CART").size();
+                    }
+                    return matchNum(count, operator, Double.parseDouble(value));
+                }
+                case "wishlistCount": {
+                    double count;
+                    if ("campaign".equals(dateRange) && campaign.getStartDate() != null) {
+                        count = purchaseRepository.findByCustomerIdAndStatusAndPurchasedAtAfter(
+                                customer.getId(), "WISHLIST", campaign.getStartDate().atStartOfDay()).size();
+                    } else {
+                        count = purchaseRepository.findByCustomerIdAndStatus(customer.getId(), "WISHLIST").size();
+                    }
+                    return matchNum(count, operator, Double.parseDouble(value));
+                }
                 default:
                     return true;
             }

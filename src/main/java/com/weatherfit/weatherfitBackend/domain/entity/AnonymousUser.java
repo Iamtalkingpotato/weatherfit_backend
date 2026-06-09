@@ -5,7 +5,7 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "anonymous_users")
+@Table(name = "anonymous_user")
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor @Builder
 public class AnonymousUser {
@@ -30,7 +30,7 @@ public class AnonymousUser {
     private LocalDateTime lastVisit;
 
     @Column(name = "popup_shown")
-    private Boolean popupShown;
+    private Integer popupShown;
 
     @Column(name = "popup_clicked")
     private Boolean popupClicked;
@@ -45,7 +45,7 @@ public class AnonymousUser {
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
         if (visitCount == null) visitCount = 1;
-        if (popupShown == null) popupShown = false;
+        if (popupShown == null) popupShown = 0;
         if (popupClicked == null) popupClicked = false;
         if (converted == null) converted = false;
     }

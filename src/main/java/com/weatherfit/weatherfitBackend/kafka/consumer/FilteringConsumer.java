@@ -23,8 +23,14 @@ public class FilteringConsumer {
         try {
             Map<String, Object> data = objectMapper.readValue(message, Map.class);
 
+            if (data.containsKey("event_type")) {
+                String raw = String.valueOf(data.get("event_type")).toUpperCase();
+                if (raw.startsWith("WISHLIST")) raw = "WISHLIST";
+                data.put("event_type", raw);
+            }
+
             if (isValid(data)) {
-                kafkaTemplate.send("weatherfit-log-success", message);
+                kafkaTemplate.send("weatherfit-log-success", objectMapper.writeValueAsString(data));
                 log.info("필터링 성공: {}", message);
             } else {
                 String reason = getFailReason(data);
@@ -71,7 +77,7 @@ public class FilteringConsumer {
         }
 
         return switch (eventType) {
-    case "wishlist_add"                              -> "product_id 또는 price 필드 없음";
+    case "WISHLIST"                                  -> "product_id 필드 없음";
     case "add_to_cart"                               -> "product_id, price, size 중 필드 없음";
     case "purchase"                                  -> "product_id, price, size 중 필드 없음";
     case "wardrobe_add"                              -> "category 또는 style 필드 없음";
@@ -83,7 +89,6 @@ public class FilteringConsumer {
             yield "유효하지 않은 feedback 값: " + value;
         yield "actual_temp 필드 없음";
     }
-    case "wishlist_remove" -> "product_id / item_id 필드 없음";
     default                -> "지원하지 않는 event_type: " + eventType;
 };
     }
@@ -99,8 +104,7 @@ public class FilteringConsumer {
         case "page_view", "product_view", "outfit_view",
              "scroll", "login"    -> true;
         case "signup"             -> data.containsKey("email");
-        case "wishlist_add",
-             "wishlist_remove"    -> data.containsKey("product_id");
+        case "WISHLIST"           -> data.containsKey("product_id");
         case "add_to_cart"        -> data.containsKey("product_id") && data.containsKey("price");
         case "purchase"           -> data.containsKey("product_id") && data.containsKey("price");
         case "wardrobe_add"       -> data.containsKey("category") && data.containsKey("style");

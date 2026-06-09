@@ -49,7 +49,7 @@ public class AnonymousUserController {
     @PatchMapping("/{anonymousId}/popup-shown")
     public ResponseEntity<Void> markPopupShown(@PathVariable String anonymousId) {
         anonymousUserRepository.findByAnonymousId(anonymousId).ifPresent(user -> {
-            user.setPopupShown(true);
+            user.setPopupShown(user.getPopupShown() != null ? user.getPopupShown() + 1 : 1);
             anonymousUserRepository.save(user);
         });
         return ResponseEntity.ok().build();
@@ -87,7 +87,7 @@ public ResponseEntity<Map<String, Object>> linkToCustomer(
     // (Native Query 사용)
     anonymousUserRepository.findByAnonymousId(anonymousId).ifPresent(user -> {
         user.setConverted(true);
-        user.setPopupShown(true);
+        user.setPopupShown(user.getPopupShown() != null ? user.getPopupShown() + 1 : 1);
         anonymousUserRepository.save(user);
     });
 

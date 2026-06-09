@@ -5,11 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.weatherfit.weatherfitBackend.domain.entity.Campaign;
 import com.weatherfit.weatherfitBackend.domain.entity.CampaignAction;
 import com.weatherfit.weatherfitBackend.domain.entity.CampaignEmailLog;
+import com.weatherfit.weatherfitBackend.domain.entity.CampaignPopupLog;
 import com.weatherfit.weatherfitBackend.domain.entity.Coupon;
 import com.weatherfit.weatherfitBackend.domain.entity.Customer;
 import com.weatherfit.weatherfitBackend.domain.entity.CustomerCoupon;
 import com.weatherfit.weatherfitBackend.domain.repository.CampaignActionRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CampaignEmailLogRepository;
+import com.weatherfit.weatherfitBackend.domain.repository.CampaignPopupLogRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CampaignRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CouponRepository;
 import com.weatherfit.weatherfitBackend.domain.repository.CustomerCouponRepository;
@@ -20,6 +22,8 @@ import com.weatherfit.weatherfitBackend.domain.repository.WardrobeItemRepository
 import com.weatherfit.weatherfitBackend.service.EmailService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -35,9 +40,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class CampaignAutoIssueScheduler {
 
+    private static final String EVENT_GROUP = "weatherfit-campaign-consumer";
+    private static final Set<String> BEHAVIOR_TRIGGERS =
+            Set.of("login", "wardrobe_add", "wishlist_add", "wishlist_remove");
+
     private final CampaignRepository            campaignRepository;
     private final CampaignActionRepository      campaignActionRepository;
     private final CampaignEmailLogRepository    campaignEmailLogRepository;
+    private final CampaignPopupLogRepository    campaignPopupLogRepository;
     private final CouponRepository              couponRepository;
     private final CustomerRepository            customerRepository;
     private final CustomerCouponRepository      customerCouponRepository;
@@ -80,132 +90,10 @@ public class CampaignAutoIssueScheduler {
             }
         }
 
-        // ── 2. 실행중 캠페인 쿠폰 자동 발급 ──────────────────────────────────
-        List<Campaign> activeCampaigns = campaignRepository.findAll().stream()
-                .filter(c -> "실행중".equals(c.getStatus()))
-                .filter(c -> {
-                    LocalDate start = c.getStartDate();
-                    LocalDate end   = c.getEndDate();
-                    return (start == null || !today.isBefore(start))
-                        && (end   == null || !today.isAfter(end));
-                })
-                .filter(c -> c.getFilterConditions() != null && !c.getFilterConditions().isBlank())
-                .toList();
-
+        // ── 2. 실행중 캠페인 전체 고객 일괄 체크 (스케줄러 보완용) ──
         List<Customer> allCustomers = customerRepository.findAll();
-
-        for (Campaign campaign : activeCampaigns) {
-            List<Long> couponIds = getEffectiveCouponIds(campaign.getId());
-            if (couponIds.isEmpty()) continue;
-
-            List<Map<String, Object>> conditions = parseConditions(campaign.getFilterConditions());
-            if (conditions.isEmpty()) continue;
-
-            for (Long couponId : couponIds) {
-                Coupon coupon = couponRepository.findById(couponId).orElse(null);
-                if (coupon == null) continue;
-
-                int issuedCount = 0;
-                for (Customer customer : allCustomers) {
-                    if (!matchesConditions(customer, conditions, campaign)) continue;
-
-                    List<CustomerCoupon> existing = customerCouponRepository.findByCustomerId(customer.getId());
-                    boolean alreadyIssued = existing.stream()
-                            .anyMatch(cc -> coupon.getId().equals(cc.getCouponId()));
-                    if (alreadyIssued) continue;
-
-                    LocalDateTime now = LocalDateTime.now();
-                    customerCouponRepository.save(CustomerCoupon.builder()
-                            .customerId(customer.getId())
-                            .couponId(coupon.getId())
-                            .issuedAt(now)
-                            .expiredAt(now.plusDays(coupon.getValidDays() != null ? coupon.getValidDays() : 30))
-                            .status("ISSUED")
-                            .build());
-                    issuedCount++;
-                    log.info("[자동발급] 캠페인={} 고객={} 쿠폰={}", campaign.getId(), customer.getId(), coupon.getId());
-                }
-
-                if (issuedCount > 0) {
-                    coupon.setIssuedCount((coupon.getIssuedCount() == null ? 0 : coupon.getIssuedCount()) + issuedCount);
-                    couponRepository.save(coupon);
-                    log.info("[자동발급] 캠페인={} 쿠폰={} 완료: {}명", campaign.getId(), couponId, issuedCount);
-                }
-            }
-        }
-
-        // ── 3. 실행중 캠페인 이메일 자동 발송 ──────────────────────────────────
-        List<Campaign> emailCampaigns = campaignRepository.findAll().stream()
-                .filter(c -> "실행중".equals(c.getStatus()))
-                .filter(c -> {
-                    LocalDate start = c.getStartDate();
-                    LocalDate end   = c.getEndDate();
-                    return (start == null || !today.isBefore(start))
-                        && (end   == null || !today.isAfter(end));
-                })
-                .filter(c -> c.getEmailSubject() != null && !c.getEmailSubject().isBlank())
-                .filter(c -> c.getEmailBody()    != null && !c.getEmailBody().isBlank())
-                .toList();
-
-        log.info("[이메일발송] 대상 캠페인 {}개 발견", emailCampaigns.size());
-
-        for (Campaign campaign : emailCampaigns) {
-            log.info("[이메일발송] ── 캠페인={} 시작 (startDate={}, emailSubject='{}')",
-                    campaign.getId(), campaign.getStartDate(), campaign.getEmailSubject());
-            log.info("[이메일발송] filterConditions raw='{}'", campaign.getFilterConditions());
-
-            List<Map<String, Object>> conditions = parseConditions(campaign.getFilterConditions());
-            log.info("[이메일발송] 캠페인={} 파싱된 조건 {}개, 전체 고객 {}명",
-                    campaign.getId(), conditions.size(), allCustomers.size());
-
-            int sentCount   = 0;
-            int skipFilter  = 0;
-            int skipConsent = 0;
-            int skipDup     = 0;
-
-            for (Customer customer : allCustomers) {
-                // 필터 조건이 있으면 조건 충족 고객만, 없으면 전체 대상
-                if (!conditions.isEmpty() && !matchesConditions(customer, conditions, campaign)) {
-                    skipFilter++;
-                    continue;
-                }
-
-                // 이메일 수신 동의 고객만
-                if (!Boolean.TRUE.equals(customer.getEmailConsent())) {
-                    skipConsent++;
-                    continue;
-                }
-
-                // 중복 발송 방지
-                if (campaignEmailLogRepository.existsByCampaignIdAndCustomerId(
-                        campaign.getId(), customer.getId())) {
-                    skipDup++;
-                    continue;
-                }
-
-                log.info("[이메일발송] 캠페인={} 고객={} email={} → 발송 시도",
-                        campaign.getId(), customer.getId(), customer.getEmail());
-                try {
-                    emailService.sendEmail(
-                            customer.getEmail(),
-                            campaign.getEmailSubject(),
-                            campaign.getEmailBody());
-
-                    campaignEmailLogRepository.save(CampaignEmailLog.builder()
-                            .campaignId(campaign.getId())
-                            .customerId(customer.getId())
-                            .sentAt(LocalDateTime.now())
-                            .build());
-                    sentCount++;
-                    log.info("[이메일발송] 캠페인={} 고객={} 발송 성공", campaign.getId(), customer.getId());
-                } catch (Exception e) {
-                    log.warn("[이메일발송] 캠페인={} 고객={} 발송 실패: {}",
-                            campaign.getId(), customer.getId(), e.getMessage(), e);
-                }
-            }
-
-            log.info("[이메일발송] 캠페인={} 완료 — 발송={}명 / 필터탈락={}명 / 동의없음={}명 / 중복={}명",
-                    campaign.getId(), sentCount, skipFilter, skipConsent, skipDup);
+        for (Customer customer : allCustomers) {
+            checkCampaignForCustomer(customer.getId());
         }
     }
 
@@ -265,13 +153,19 @@ public class CampaignAutoIssueScheduler {
                 LocalDate dateActual = getDateField(c, field);
                 result      = matchDate(dateActual, operator, String.valueOf(value));
                 actualValue = dateActual;
+            } else if ("select".equals(type)) {
+                String strActual = getStringField(c, field);
+                // true/false 값 정규화: "true" == "동의", DB boolean은 "true"/"false" 문자열로 비교
+                String condStr = String.valueOf(value);
+                result      = matchString(strActual, operator, condStr);
+                actualValue = strActual;
             } else {
                 String strActual = getStringField(c, field);
                 result      = matchString(strActual, operator, String.valueOf(value));
                 actualValue = strActual;
             }
 
-            log.info("[필터매칭] 고객={} field={} → 실제값={} / 기준값={} / 결과={}",
+            log.debug("[필터매칭] 고객={} field={} → 실제값={} / 기준값={} / 결과={}",
                     c.getId(), field, actualValue, value, result);
             return result;
         } catch (Exception e) {
@@ -295,8 +189,13 @@ public class CampaignAutoIssueScheduler {
             case "joinChannel"     -> c.getJoinChannel();
             case "joinType"        -> c.getJoinType();
             case "uid"             -> c.getUid();
-            case "coldSensitivity" -> c.getColdSensitivity() != null ? String.valueOf(c.getColdSensitivity()) : null;
-            default                -> null;
+            case "coldSensitivity"   -> c.getColdSensitivity()   != null ? String.valueOf(c.getColdSensitivity())   : null;
+            case "emailConsent"      -> c.getEmailConsent()      != null ? String.valueOf(c.getEmailConsent())      : null;
+            case "marketingConsent"  -> c.getMarketingConsent()  != null ? String.valueOf(c.getMarketingConsent())  : null;
+            case "pushConsent"       -> c.getPushConsent()        != null ? String.valueOf(c.getPushConsent())        : null;
+            case "smsConsent"        -> c.getSmsConsent()         != null ? String.valueOf(c.getSmsConsent())         : null;
+            case "isFraud"           -> c.getIsFraud()            != null ? String.valueOf(c.getIsFraud())            : null;
+            default                  -> null;
         };
     }
 
@@ -307,7 +206,7 @@ public class CampaignAutoIssueScheduler {
                 && campaign != null && campaign.getStartDate() != null;
         LocalDate from = useCampaignStart ? campaign.getStartDate() : null;
 
-        log.info("[getNumberField] 고객={} field={} since='{}' useCampaignStart={} from={}",
+        log.debug("[getNumberField] 고객={} field={} since='{}' useCampaignStart={} from={}",
                 id, field, since, useCampaignStart, from);
 
         return switch (field) {
@@ -317,7 +216,7 @@ public class CampaignAutoIssueScheduler {
                 double cnt = useCampaignStart
                         ? (double) temperatureFeedbackRepository.countByCustomerIdAndFeedbackAndFeedbackDateGreaterThanEqual(id, "HOT", from)
                         : (double) temperatureFeedbackRepository.countByCustomerIdAndFeedback(id, "HOT");
-                log.info("[getNumberField] 고객={} hotFeedbackCount={} (from={})", id, cnt, from);
+                log.debug("[getNumberField] 고객={} hotFeedbackCount={} (from={})", id, cnt, from);
                 yield cnt;
             }
             case "coldFeedbackCount" -> useCampaignStart
@@ -455,5 +354,157 @@ public class CampaignAutoIssueScheduler {
             case "<=", "lte"                -> "lte";
             default                         -> "eq";
         };
+    }
+
+    // ── 이벤트 드리븐 Kafka 리스너 ────────────────────────────────────────────────
+
+    @KafkaListener(topics = "weatherfit.purchase", groupId = EVENT_GROUP)
+    public void onPurchase(ConsumerRecord<String, String> record) {
+        try {
+            Map<String, Object> data = objectMapper.readValue(record.value(), Map.class);
+            Long customerId = parseCustomerId(data);
+            if (customerId != null) checkCampaignForCustomer(customerId);
+        } catch (Exception e) {
+            log.warn("[이벤트드리븐] purchase 파싱 실패: {}", e.getMessage());
+        }
+    }
+
+    @KafkaListener(topics = "weatherfit.feedback", groupId = EVENT_GROUP)
+    public void onFeedback(ConsumerRecord<String, String> record) {
+        try {
+            Map<String, Object> data = objectMapper.readValue(record.value(), Map.class);
+            Long customerId = parseCustomerId(data);
+            if (customerId != null) checkCampaignForCustomer(customerId);
+        } catch (Exception e) {
+            log.warn("[이벤트드리븐] feedback 파싱 실패: {}", e.getMessage());
+        }
+    }
+
+    @KafkaListener(topics = "weatherfit.behavior", groupId = EVENT_GROUP)
+    public void onBehavior(ConsumerRecord<String, String> record) {
+        try {
+            Map<String, Object> data = objectMapper.readValue(record.value(), Map.class);
+            String eventType = String.valueOf(
+                    data.getOrDefault("event_type", data.getOrDefault("action", ""))).toLowerCase();
+            if (!BEHAVIOR_TRIGGERS.contains(eventType)) return;
+            Long customerId = parseCustomerId(data);
+            if (customerId != null) checkCampaignForCustomer(customerId);
+        } catch (Exception e) {
+            log.warn("[이벤트드리븐] behavior 파싱 실패: {}", e.getMessage());
+        }
+    }
+
+    @KafkaListener(topics = "weatherfit.customer", groupId = EVENT_GROUP)
+    public void onCustomer(ConsumerRecord<String, String> record) {
+        try {
+            Map<String, Object> data = objectMapper.readValue(record.value(), Map.class);
+            Long customerId = parseCustomerId(data);
+            if (customerId != null) checkCampaignForCustomer(customerId);
+        } catch (Exception e) {
+            log.warn("[이벤트드리븐] customer 파싱 실패: {}", e.getMessage());
+        }
+    }
+
+    /** 특정 고객 1명에 대해 실행 중인 모든 캠페인 조건을 체크하고, 조건 충족 시 쿠폰 발급 / 이메일 발송 / 팝업 세팅 */
+    private void checkCampaignForCustomer(Long customerId) {
+        Customer customer = customerRepository.findById(customerId).orElse(null);
+        if (customer == null) return;
+
+        LocalDate today = LocalDate.now();
+        List<Campaign> activeCampaigns = campaignRepository.findAll().stream()
+                .filter(c -> "실행중".equals(c.getStatus()))
+                .filter(c -> {
+                    LocalDate start = c.getStartDate();
+                    LocalDate end   = c.getEndDate();
+                    return (start == null || !today.isBefore(start))
+                        && (end   == null || !today.isAfter(end));
+                })
+                .filter(c -> c.getFilterConditions() != null && !c.getFilterConditions().isBlank())
+                .toList();
+
+        for (Campaign campaign : activeCampaigns) {
+            log.debug("[이벤트드리븐] 고객={} 캠페인={} 체크 시작", customerId, campaign.getId());
+
+            List<Map<String, Object>> conditions = parseConditions(campaign.getFilterConditions());
+            if (!matchesConditions(customer, conditions, campaign)) continue;
+
+            int couponCount = 0;
+            int emailCount  = 0;
+            int popupCount  = 0;
+
+            // 쿠폰 발급
+            List<Long> couponIds = getEffectiveCouponIds(campaign.getId());
+            for (Long couponId : couponIds) {
+                Coupon coupon = couponRepository.findById(couponId).orElse(null);
+                if (coupon == null) continue;
+
+                boolean alreadyIssued = customerCouponRepository.findByCustomerId(customerId).stream()
+                        .anyMatch(cc -> coupon.getId().equals(cc.getCouponId()));
+                if (alreadyIssued) continue;
+
+                LocalDateTime now = LocalDateTime.now();
+                customerCouponRepository.save(CustomerCoupon.builder()
+                        .customerId(customerId)
+                        .couponId(coupon.getId())
+                        .issuedAt(now)
+                        .expiredAt(now.plusDays(coupon.getValidDays() != null ? coupon.getValidDays() : 30))
+                        .status("ISSUED")
+                        .build());
+                coupon.setIssuedCount((coupon.getIssuedCount() == null ? 0 : coupon.getIssuedCount()) + 1);
+                couponRepository.save(coupon);
+                couponCount++;
+            }
+
+            // 이메일 발송
+            if (campaign.getEmailSubject() != null && !campaign.getEmailSubject().isBlank()
+                    && campaign.getEmailBody() != null && !campaign.getEmailBody().isBlank()
+                    && Boolean.TRUE.equals(customer.getEmailConsent())
+                    && !campaignEmailLogRepository.existsByCampaignIdAndCustomerId(campaign.getId(), customerId)
+                    && customer.getEmail() != null
+                    && customer.getEmail().matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) {
+                try {
+                    emailService.sendEmail(customer.getEmail(), campaign.getEmailSubject(), campaign.getEmailBody());
+                    emailCount++;
+                } catch (Exception e) {
+                    log.warn("[이벤트드리븐] 이메일 발송 실패: 고객={} 캠페인={} — {}", customerId, campaign.getId(), e.getMessage());
+                }
+                // 성공·실패 모두 중복 방지를 위해 기록
+                campaignEmailLogRepository.save(CampaignEmailLog.builder()
+                        .campaignId(campaign.getId())
+                        .customerId(customerId)
+                        .sentAt(LocalDateTime.now())
+                        .build());
+            }
+
+            // 팝업 액션 체크 — 오늘 날짜 기준 중복 체크 후 campaign_popup_log 저장
+            boolean hasPopupAction = campaignActionRepository.findByCampaignId(campaign.getId()).stream()
+                    .anyMatch(a -> "POPUP".equalsIgnoreCase(a.getActionType()));
+            if (hasPopupAction) {
+                LocalDate today2 = LocalDate.now();
+                boolean alreadyShown = campaignPopupLogRepository
+                        .existsByCampaignIdAndCustomerIdAndShownDate(campaign.getId(), customerId, today2);
+                if (!alreadyShown) {
+                    campaignPopupLogRepository.save(CampaignPopupLog.builder()
+                            .campaignId(campaign.getId())
+                            .customerId(customerId)
+                            .shownDate(today2)
+                            .createdAt(LocalDateTime.now())
+                            .build());
+                    popupCount++;
+                }
+            }
+
+            if (couponCount + emailCount + popupCount > 0) {
+                log.info("[이벤트드리븐] 고객={} 캠페인={} 완료 — 쿠폰={} / 이메일={} / 팝업={}",
+                        customerId, campaign.getId(), couponCount, emailCount, popupCount);
+            }
+        }
+    }
+
+    private Long parseCustomerId(Map<String, Object> data) {
+        Object raw = data.get("customer_id");
+        if (raw == null || String.valueOf(raw).startsWith("uid_")) raw = data.get("partnerCustomerId");
+        if (raw == null || String.valueOf(raw).equals("null")) return null;
+        try { return Long.parseLong(String.valueOf(raw)); } catch (NumberFormatException e) { return null; }
     }
 }

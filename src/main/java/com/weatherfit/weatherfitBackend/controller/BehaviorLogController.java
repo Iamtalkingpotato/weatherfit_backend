@@ -192,7 +192,7 @@ public class BehaviorLogController {
                 .collect(Collectors.toMap(Customer::getId, Customer::getName));
 
         // 날짜+시각 전체 포맷 (yyyy.MM.dd HH:mm)
-        DateTimeFormatter fmt    = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm");
+        DateTimeFormatter fmt    = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss");
         DateTimeFormatter dedupFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
         // wishlist/purchase 계열은 pageUrl 없어도 포함
