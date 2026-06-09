@@ -24,13 +24,14 @@ public class CouponController {
     public List<Coupon> getAll() {
         List<Coupon> coupons = couponRepository.findAll();
 
-        // 각 쿠폰에 대해 campaign_action 역참조 → 연결된 캠페인 ID 전체 수집
+        // 각 쿠폰에 대해 campaign_action 역참조 → 연결된 캠페인 ID 수집
+        // (캠페인-쿠폰 연결은 캠페인 쪽에서만 관리, campaign_action이 단일 소스)
         coupons.forEach(coupon -> {
             List<Long> ids = campaignActionRepository.findByCouponId(coupon.getId()).stream()
                     .map(action -> action.getCampaignId())
                     .distinct()
                     .collect(Collectors.toList());
-            coupon.setLinkedCampaignIds(ids);
+            coupon.setLinkedCampaignIds(ids.isEmpty() ? null : ids);
         });
 
         return coupons;
